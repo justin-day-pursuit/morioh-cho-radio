@@ -4,3 +4,6 @@ token.json
 credentials.json
 __pycache__/
 *.pyc
+
+# orchestrate local files
+.cursor/

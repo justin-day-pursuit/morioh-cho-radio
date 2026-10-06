@@ -13,6 +13,8 @@
 # - GOOGLE_SCOPES, only if Google asks for a different permission name.
 # - LOGIN_BROWSER, if the sign-in window should open in a different browser.
 # - MAX_EMAILS, if you want more or fewer unread messages in the briefing.
+# - URGENT_SENDERS, to mark important people's mail as urgent.
+# - SKIPPED_SENDER_DOMAINS, to hide mail from marketing domains.
 # - The question inside run(), if you want a different opening line.
 #
 # Before the first real briefing, open .env and replace SLACK_BOT_TOKEN
@@ -71,8 +73,29 @@ MAX_EMAILS = 25
 PLACEHOLDER_OPENROUTER_KEY = "sk-or-your-key-here"
 PLACEHOLDER_SLACK_TOKEN = "xoxp-your-token-here"
 
-# Kai must use the tool results, in this order, and keep these headings.
-SYSTEM_PROMPT = """
+# Mail from these addresses always belongs under URGENT.
+# Add one address per line, inside quotes, with a comma after it.
+# Example: "teacher@school.edu",
+URGENT_SENDERS = []
+
+# Mail from these domains is thrown away before Kai reads it.
+# Use the part after the @ sign. Example: "marketing.example.com",
+SKIPPED_SENDER_DOMAINS = []
+
+
+def briefing_system_prompt():
+    """Build Kai's instructions, including the current urgent-sender list.
+
+    Editing URGENT_SENDERS is enough. This function copies those addresses
+    into the instructions so Kai sees them on the next run.
+    """
+    names = [item.strip() for item in URGENT_SENDERS if item.strip()]
+    if names:
+        sender_rule = "These senders are always urgent: " + ", ".join(names) + "."
+    else:
+        sender_rule = "No named senders are marked urgent yet."
+
+    return f"""
 You are Kai Harada, the morning host of Morioh Cho Radio.
 Give the listener a briefing about what they missed.
 
@@ -93,6 +116,9 @@ OTHER EMAILS
 SUGGESTED ACTIONS
 
 Put time-sensitive mail and meetings that need a decision under URGENT.
+{sender_rule}
+A subject containing "action required", "urgent", or "deadline", in any
+capitalization, always goes under URGENT, no matter who sent it.
 Put the calendar under UPCOMING EVENTS.
 Put the Slack messages under SLACK HIGHLIGHTS.
 Put the remaining mail under OTHER EMAILS.
@@ -171,6 +197,32 @@ def _header_value(message, header_name):
     return ""
 
 
+def _sender_domain(sender):
+    """Return the part after @ in a From line, in lowercase.
+
+    Gmail sometimes writes "Ada Lovelace <ada@school.edu>". This keeps
+    school.edu and ignores the name.
+    """
+    text = (sender or "").strip()
+    if "<" in text and ">" in text:
+        text = text.split("<", 1)[1].split(">", 1)[0]
+    text = text.strip().lower()
+    if "@" not in text:
+        return ""
+    return text.rsplit("@", 1)[1].strip()
+
+
+def _is_skipped_sender(sender):
+    """True when this sender's domain is on the skip list."""
+    domain = _sender_domain(sender)
+    skipped = {
+        item.strip().lower()
+        for item in SKIPPED_SENDER_DOMAINS
+        if item.strip()
+    }
+    return bool(domain) and domain in skipped
+
+
 @tool
 def check_gmail(hours_back: int = 12):
     """Fetch unread Gmail from the last few hours.
@@ -208,9 +260,13 @@ def check_gmail(hours_back: int = 12):
                 )
                 .execute()
             )
+            sender = _header_value(message, "From")
+            # Marketing mail is dropped here, so Kai never sees it.
+            if _is_skipped_sender(sender):
+                continue
             emails.append(
                 {
-                    "sender": _header_value(message, "From"),
+                    "sender": sender,
                     "subject": _header_value(message, "Subject"),
                     "date": _header_value(message, "Date"),
                     "snippet": (message.get("snippet") or "")[:200],
@@ -366,7 +422,7 @@ def run():
     agent = Agent(
         model=model,
         tools=[check_gmail, check_calendar, check_slack],
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=briefing_system_prompt(),
         callback_handler=None,
     )
 
